@@ -152,6 +152,38 @@ def precision_at_k(predictions: pd.DataFrame, ground_truth_category: str, k: int
 
     return relevant_count / k
 
+def recall_at_k(predictions: pd.DataFrame, ground_truth_category: str, k: int) -> float:
+    """
+    Name: recall_at_k
+
+    Purpose:
+      Computes Recall at K for career recommendations.
+
+    Inputs:
+      - predictions: pd.DataFrame — model predictions with columns [Title, Career Category, Match_Score]
+      - ground_truth_category: str — correct career category
+      - k: int — number of top recommendations to consider
+
+    Outputs:
+      - float — Recall@K score in range [0, 1]
+    """
+    required_cols = ['Title', 'Career Category', 'Match_Score']
+    if not all(col in predictions.columns for col in required_cols):
+        raise ValueError(f"Predictions DataFrame must contain columns: {required_cols}")
+
+    # Total relevant items the model returned overall
+    total_relevant = (predictions['Career Category'] == ground_truth_category).sum()
+
+    if total_relevant == 0:
+        return 0.0
+
+    # Get top K predictions
+    top_k = predictions.nlargest(k, 'Match_Score')
+
+    # Count relevant items specifically in the top K
+    relevant_count = (top_k['Career Category'] == ground_truth_category).sum()
+
+    return relevant_count / total_relevant
 
 def compute_all_metrics(predictions: pd.DataFrame, ground_truth_category: str, k_values: List[int]) -> Dict[str, Any]:
     """
@@ -179,5 +211,6 @@ def compute_all_metrics(predictions: pd.DataFrame, ground_truth_category: str, k
     for k in k_values:
         results[f'ndcg@{k}'] = ndcg_at_k(predictions, ground_truth_category, k)
         results[f'precision@{k}'] = precision_at_k(predictions, ground_truth_category, k)
+        results[f'recall@{k}'] = recall_at_k(predictions, ground_truth_category, k)  # added recall metric
 
     return results

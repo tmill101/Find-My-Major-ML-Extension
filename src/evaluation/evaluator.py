@@ -5,7 +5,8 @@ Path: src/evaluation/evaluator.py
 Purpose:
   Orchestrates the evaluation loop across datasets and models. Manages the
   evaluation workflow including training, testing, metric computation, and
-  benchmarking. No metric logic is implemented here.
+  benchmarking. Delegates configuration resolution and result building to
+  specialized helper modules for improved modularity.
 
 Original Author(s):
   - AI Assistant (GitHub Copilot)
@@ -17,18 +18,21 @@ Editors:
   - AI Assistant (2026-03-23) — Initial implementation
   - AI Assistant (2026-03-30) — Added configurable metric selection enforcement
   - AI Assistant (2026-03-30) — Added evaluation contract checks and k-value validation
+  - OpenAI Codex (2026-04-06) — Added ProcessPoolExecutor experiment-level parallelism
+  - AI Assistant (2026-04-20) — Refactored for modularity by extracting helpers
 
 Last Editor:
   - AI Assistant
 
 Last Edit Date:
-  2026-03-30
+  2026-04-20
 
 Assumptions & Constraints:
   - Models implement BaseModel interface (train, test, get_name)
-  - Datasets are lists of TrainingRecord objects
-  - O*NET database is pre-loaded DataFrame
+  - Dataset/model jobs come from config dataset/model matrices
+  - Each worker process loads its own dataset and O*NET CSV
   - Evaluation results stored in experiments/results/<id>/evaluation.json
+  - Configuration resolution and result building delegated to helper modules
 
 Related Docs:
   - docs/src/evaluation/evaluation.md
@@ -36,16 +40,29 @@ Related Docs:
 """
 
 import json
+import random
+import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
+
+import numpy as np
 import pandas as pd
 
+from src.data.loader import load_training_records, split_training_records
 from src.data.schemas import TrainingRecord
 from src.evaluation.metrics import compute_all_metrics
-from src.evaluation.benchmark import benchmark_model_inference, get_model_size_mb
-
-_SUPPORTED_METRICS = {"ndcg_at_k", "precision_at_k"}
-_REQUIRED_PREDICTION_COLUMNS = ("Title", "Career Category", "Match_Score")
+from src.evaluation.benchmark import benchmark_model_inference
+from src.evaluation.config_resolution import (
+    resolve_parallel_jobs, resolve_metric_selection, validate_k_values,
+    resolve_top_k, filter_metric_results
+)
+from src.evaluation.result_builders import (
+    collect_prediction_contract_violations, merge_violation_counts,
+    build_model_result, sanitize_path_component, write_aggregate_results,
+    write_single_experiment_result, _REQUIRED_PREDICTION_COLUMNS
+)
+from src.models import MODEL_REGISTRY
 
 
 class EvaluationInterrupted(Exception):
@@ -56,110 +73,175 @@ class EvaluationInterrupted(Exception):
         self.partial_result = partial_result
 
 
-# Normalize configured metric names into the supported evaluator metric set.
-def _resolve_metric_selection(config: Dict[str, Any]) -> set[str]:
-    evaluation_cfg = config.get("evaluation", {})
-    configured = evaluation_cfg.get("metrics")
+# Build the dataset/model matrix used for experiment-level process parallelism.
+def _build_experiment_jobs(config: Dict[str, Any]) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    dataset_configs = config.get('datasets')
+    if not isinstance(dataset_configs, list) or not dataset_configs:
+        raise ValueError("Configuration must contain a non-empty 'datasets' list.")
 
-    if configured is None:
-        return set(_SUPPORTED_METRICS)
+    model_configs = config.get('models')
+    if not isinstance(model_configs, list) or not model_configs:
+        raise ValueError("Configuration must contain a non-empty 'models' list.")
 
-    selected = set(configured)
-    unsupported = selected - _SUPPORTED_METRICS
-    if unsupported:
-        unsupported_str = ", ".join(sorted(unsupported))
-        supported_str = ", ".join(sorted(_SUPPORTED_METRICS))
-        raise ValueError(
-            f"Unsupported evaluation metric(s): {unsupported_str}. "
-            f"Supported metrics: {supported_str}"
+    jobs: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for dataset_cfg in dataset_configs:
+        if not dataset_cfg.get('enabled', True):
+            print(f"Skipping dataset '{dataset_cfg.get('name', '?')}' (enabled: false)", flush=True)
+            continue
+        for model_cfg in model_configs:
+            if not model_cfg.get('enabled', True):
+                continue
+            model_name = model_cfg.get('model')
+            if model_name not in MODEL_REGISTRY:
+                print(
+                    f"Warning: Unknown model '{model_name}' in config — skipping.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            jobs.append((dict(dataset_cfg), dict(model_cfg)))
+
+    return jobs
+
+
+# Resolve a stable human-readable dataset identifier for logging and outputs.
+def _resolve_dataset_name(dataset_config: Dict[str, Any], fallback_idx: int) -> str:
+    configured_name = dataset_config.get('name')
+    if isinstance(configured_name, str) and configured_name.strip():
+        return configured_name.strip()
+    return f"dataset_{fallback_idx}"
+
+
+# Resolve a stable model identifier from model config metadata.
+def _resolve_model_name(model_config: Dict[str, Any], fallback_idx: int) -> str:
+    configured_name = model_config.get('model')
+    if isinstance(configured_name, str) and configured_name.strip():
+        return configured_name.strip()
+    return f"model_{fallback_idx}"
+
+
+# Instantiate a model from one config row and enforce nested-parallelism safety.
+def _build_model_from_config(model_config: Dict[str, Any], config: Dict[str, Any]) -> Any:
+    model_name = model_config.get('model')
+    if model_name not in MODEL_REGISTRY:
+        raise KeyError(f"Unknown model '{model_name}' in config.")
+
+    x_features = model_config.get('x_features')
+    if not isinstance(x_features, list) or not x_features:
+        raise KeyError(f"Model '{model_name}' must define a non-empty x_features list.")
+
+    y_features = model_config.get('y_features')
+    if not isinstance(y_features, list) or not y_features:
+        raise KeyError(f"Model '{model_name}' must define a non-empty y_features list.")
+
+    parameters = dict(model_config.get('parameters', {}))
+    if 'n_jobs' in parameters:
+        parameters['n_jobs'] = 1
+
+    top_n_categories = parameters.pop('top_n_categories', 3)
+    top_n_jobs = config.get('evaluation', {}).get('top_k', 5)
+
+    return MODEL_REGISTRY[model_name](
+        x_features=x_features,
+        y_feature=y_features[0],
+        parameters=parameters,
+        top_n_jobs=top_n_jobs,
+        top_n_categories=top_n_categories,
+    )
+
+
+# Build a Dataset object for one experiment worker from dataset/model configs.
+def _build_dataset_from_config(
+    dataset_config: Dict[str, Any],
+    model_config: Dict[str, Any],
+) -> 'Dataset':
+    train_path = dataset_config.get('train_path')
+    if not train_path:
+        raise KeyError("Dataset configuration missing 'train_path'.")
+
+    train_records = load_training_records(train_path)
+
+    test_path = dataset_config.get('test_path')
+    if test_path:
+        test_records = load_training_records(test_path)
+    else:
+        split_cfg = dataset_config.get('split') or {}
+        val_fraction = float(split_cfg.get('validation', 0.15))
+        test_fraction = float(split_cfg.get('test', 0.15))
+
+        train_records, _, test_records = split_training_records(
+            train_records,
+            val_size=val_fraction,
+            test_size=test_fraction,
         )
 
-    return selected
+    if dataset_config.get('shuffle', False):
+        random.shuffle(train_records)
+        random.shuffle(test_records)
+
+    x_features = model_config.get('x_features')
+    if not isinstance(x_features, list) or not x_features:
+        raise KeyError("Model configuration missing non-empty 'x_features'.")
+
+    y_features = model_config.get('y_features')
+    label_column = y_features[0] if isinstance(y_features, list) and y_features else 'Career Category'
+
+    return Dataset(
+        train_records=train_records,
+        test_records=test_records,
+        feature_columns=x_features,
+        label_column=label_column,
+    )
 
 
-# Filter computed metric outputs based on configured metric families.
+# ============================================================================
+# Wrapper functions maintaining backward-compatible underscore-prefixed names
+# while delegating to imported helper modules. This preserves evaluator.py as
+# the orchestration layer without duplicating code across modules.
+# ============================================================================
+
+def _resolve_parallel_jobs(config: Dict[str, Any]) -> int:
+    """Delegate to config_resolution module."""
+    return resolve_parallel_jobs(config)
+
+
+def _resolve_metric_selection(config: Dict[str, Any]) -> set[str]:
+    """Delegate to config_resolution module."""
+    return resolve_metric_selection(config)
+
+
 def _filter_metric_results(
     metric_results: Dict[str, Any],
     selected_metrics: set[str],
 ) -> Dict[str, Any]:
-    filtered: Dict[str, Any] = {}
-
-    for key, value in metric_results.items():
-        if key.startswith("ndcg@") and "ndcg_at_k" in selected_metrics:
-            filtered[key] = value
-        elif key.startswith("precision@") and "precision_at_k" in selected_metrics:
-            filtered[key] = value
-
-    return filtered
+    """Delegate to config_resolution module."""
+    return filter_metric_results(metric_results, selected_metrics)
 
 
 def _validate_k_values(k_values: Any, top_k: int) -> list[int]:
-    if not isinstance(top_k, int) or top_k <= 0:
-        raise ValueError(f"evaluation.top_k must be a positive integer, got {top_k!r}")
-
-    if not isinstance(k_values, list) or not k_values:
-        raise ValueError("evaluation.k_values must be a non-empty list of positive integers")
-
-    normalized: list[int] = []
-    for value in k_values:
-        if not isinstance(value, int) or value <= 0:
-            raise ValueError(
-                f"evaluation.k_values must contain only positive integers, got {value!r}"
-            )
-        if value > top_k:
-            raise ValueError(
-                f"evaluation.k_values contains {value}, which exceeds evaluation.top_k={top_k}. "
-                "Use k_values <= top_k so metrics reflect returned recommendations."
-            )
-        normalized.append(value)
-
-    return normalized
+    """Delegate to config_resolution module."""
+    return validate_k_values(k_values, top_k)
 
 
 def _resolve_top_k(evaluation_cfg: Dict[str, Any], model: Any) -> int:
-    configured_top_k = evaluation_cfg.get("top_k")
-    if configured_top_k is not None:
-        if not isinstance(configured_top_k, int) or configured_top_k <= 0:
-            raise ValueError(
-                f"evaluation.top_k must be a positive integer, got {configured_top_k!r}"
-            )
-        return configured_top_k
-
-    model_top_n_jobs = getattr(model, "top_n_jobs", None)
-    if isinstance(model_top_n_jobs, int) and model_top_n_jobs > 0:
-        return model_top_n_jobs
-
-    return 5
+    """Delegate to config_resolution module."""
+    return resolve_top_k(evaluation_cfg, model)
 
 
 def _collect_prediction_contract_violations(
     predictions: pd.DataFrame,
     top_n_jobs: int,
 ) -> Dict[str, int]:
-    violations: Dict[str, int] = {}
-
-    if len(predictions) > top_n_jobs:
-        violations["row_count_exceeds_top_n_jobs"] = 1
-
-    null_in_required = int(predictions[list(_REQUIRED_PREDICTION_COLUMNS)].isnull().any().any())
-    if null_in_required:
-        violations["null_in_required_columns"] = 1
-
-    scores = pd.to_numeric(predictions["Match_Score"], errors="coerce")
-    if scores.isnull().any():
-        violations["non_numeric_match_score"] = 1
-    elif ((scores < 0.0) | (scores > 1.0)).any():
-        violations["match_score_out_of_range"] = 1
-
-    return violations
+    """Delegate to result_builders module."""
+    return collect_prediction_contract_violations(predictions, top_n_jobs)
 
 
 def _merge_violation_counts(
     aggregate: Dict[str, int],
     sample_violations: Dict[str, int],
 ) -> None:
-    for key, value in sample_violations.items():
-        aggregate[key] = aggregate.get(key, 0) + value
+    """Delegate to result_builders module."""
+    return merge_violation_counts(aggregate, sample_violations)
 
 
 def _build_model_result(
@@ -170,25 +252,31 @@ def _build_model_result(
     constraint_violations: Dict[str, int],
     samples_evaluated: int,
 ) -> Dict[str, Any]:
-    if not all_metrics:
-        raise ValueError("No test samples were evaluated. Check max_test_samples and test dataset size.")
+    """Delegate to result_builders module."""
+    return build_model_result(
+        all_metrics, latencies, memory_usages, model,
+        constraint_violations, samples_evaluated
+    )
 
-    avg_metrics: Dict[str, float] = {}
-    for key in all_metrics[0].keys():
-        avg_metrics[key] = sum(m[key] for m in all_metrics) / len(all_metrics)
 
-    avg_latency = sum(latencies) / len(latencies)
-    avg_memory = sum(memory_usages) / len(memory_usages)
-    model_size = get_model_size_mb(model)
+def _sanitize_path_component(value: str) -> str:
+    """Delegate to result_builders module."""
+    return sanitize_path_component(value)
 
-    return {
-        'metrics': avg_metrics,
-        'latency_ms': avg_latency,
-        'memory_bytes': avg_memory,
-        'model_size_mb': model_size,
-        'constraint_violations': constraint_violations,
-        'samples_evaluated': samples_evaluated,
-    }
+
+def _write_aggregate_results(results: List[Dict[str, Any]], output_path: Path) -> None:
+    """Delegate to result_builders module."""
+    return write_aggregate_results(results, output_path)
+
+
+def _write_single_experiment_result(
+    result: Dict[str, Any],
+    output_path: Path,
+    run_id: str,
+    job_index: int,
+) -> None:
+    """Delegate to result_builders module."""
+    return write_single_experiment_result(result, output_path, run_id, job_index)
 
 
 class Dataset:
@@ -266,79 +354,155 @@ class Dataset:
         return train_df, test_df
 
 
-def evaluate_experiment(datasets: List[Dataset], models: List[Any], onet_db: pd.DataFrame,
-                       config: Dict[str, Any], output_path: Path | None = None) -> List[Dict[str, Any]]:
+def run_single_experiment(
+    dataset_config: Dict[str, Any],
+    model_config: Dict[str, Any],
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Name: run_single_experiment
+
+    Purpose:
+      Executes one complete experiment job for a single (dataset, model) pair.
+      Loads data and model from config, trains the model, runs evaluation, and
+      returns a structured result payload.
+
+    Inputs:
+      - dataset_config: Dict[str, Any] — one dataset row from config['datasets']
+      - model_config: Dict[str, Any] — one model row from config['models']
+      - config: Dict[str, Any] — full experiment config (run metadata + paths/settings)
+
+    Outputs:
+      - Dict[str, Any] — evaluation result for this dataset/model job
+
+    Raises / Errors:
+      - KeyError: if required config fields are missing
+      - FileNotFoundError: if configured data paths do not exist
+      - ValueError: if evaluation configuration values are invalid
+
+    Notes:
+      - Worker is process-safe and self-contained (no shared mutable state).
+      - If model parameters include `n_jobs`, it is forced to 1 to prevent
+        nested process parallelism under ProcessPoolExecutor.
+    """
+    seed_value = config.get('experiment', {}).get('random_seed')
+    if seed_value is not None:
+        try:
+            seed = int(seed_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"experiment.random_seed must be an integer if provided, got {seed_value!r}"
+            ) from exc
+        random.seed(seed)
+        np.random.seed(seed)
+
+    onet_db_path = config.get('onet_db_path')
+    if not onet_db_path:
+        raise KeyError("Configuration missing 'onet_db_path'.")
+    onet_db = pd.read_csv(onet_db_path)
+
+    dataset = _build_dataset_from_config(dataset_config, model_config)
+    model = _build_model_from_config(model_config, config)
+
+    X_train, _ = dataset.split()
+    y_col = getattr(model, 'y_feature', dataset.label_column)
+    if y_col not in X_train.columns:
+        raise KeyError(f"Training DataFrame missing label column '{y_col}'.")
+    y_train = X_train[y_col]
+
+    if hasattr(model, 'reset'):
+        model.reset()
+    model.train(X_train[dataset.feature_columns], y_train)
+
+    result = evaluate_model(model, dataset, onet_db, config)
+    result['dataset'] = _resolve_dataset_name(dataset_config, fallback_idx=0)
+    result['model'] = _resolve_model_name(model_config, fallback_idx=0)
+    return result
+
+
+def evaluate_experiment(
+    datasets: List[Dataset],
+    models: List[Any],
+    onet_db: pd.DataFrame,
+    config: Dict[str, Any],
+    output_path: Path | None = None,
+) -> List[Dict[str, Any]]:
     """
     Name: evaluate_experiment
 
     Purpose:
-      Runs the full evaluation loop across all datasets and models.
+      Runs the full evaluation matrix across datasets and models using
+      process-level parallelism (one process per dataset/model job).
 
     Inputs:
-      - datasets: List[Dataset] — evaluation datasets
-      - models: List[Any] — model instances implementing BaseModel interface
-      - onet_db: pd.DataFrame — O*NET career database
+      - datasets: List[Dataset] — retained for interface compatibility (unused)
+      - models: List[Any] — retained for interface compatibility (unused)
+      - onet_db: pd.DataFrame — retained for interface compatibility (unused)
       - config: Dict[str, Any] — experiment configuration
 
     Outputs:
       - List[Dict[str, Any]] — evaluation results for each (dataset, model) pair
 
     Raises / Errors:
-      - AttributeError: if models don't implement required interface
+      - ValueError: if parallel_jobs or config matrices are invalid
 
     Notes:
-      - Orchestrates the evaluation loop as specified in evaluation.md
-      - Calls evaluate_model for each combination
+      - Builds jobs from config['datasets'] × config['models'].
+      - Uses ProcessPoolExecutor with max_workers from training.parallel_jobs.
+      - Worker failures are isolated; one failed job does not abort other jobs.
     """
-    results = []
+    _ = datasets, models, onet_db  # preserve the existing public signature
 
-    for dataset_idx, dataset in enumerate(datasets):
-        X_train, X_test = dataset.split()
+    jobs = _build_experiment_jobs(config)
+    if not jobs:
+        return []
 
-        for model in models:
-            y_col = getattr(model, 'y_feature', dataset.label_column)
-            y_train = X_train[y_col]
-            # Reset model if method exists
-            if hasattr(model, 'reset'):
-                model.reset()
+    run_id = str(config.get('run', {}).get('run_id', 'run'))
+    max_workers = _resolve_parallel_jobs(config)
+    results_by_job: Dict[int, Dict[str, Any]] = {}
 
-            # Train model
-            model.train(X_train[dataset.feature_columns], y_train)
+    futures: Dict[Any, Tuple[int, str, str]] = {}
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            for job_index, (dataset_config, model_config) in enumerate(jobs):
+                dataset_name = _resolve_dataset_name(dataset_config, fallback_idx=job_index)
+                model_name = _resolve_model_name(model_config, fallback_idx=job_index)
+                future = executor.submit(
+                    run_single_experiment,
+                    dataset_config,
+                    model_config,
+                    config,
+                )
+                futures[future] = (job_index, dataset_name, model_name)
 
-            # Evaluate model on this dataset
-            try:
-                model_results = evaluate_model(model, dataset, onet_db, config)
-            except EvaluationInterrupted as exc:
-                model_results = dict(exc.partial_result)
-                model_results['dataset'] = f'dataset_{dataset_idx}'
-                model_results['model'] = model.get_name()
-                model_results['interrupted'] = True
-                results.append(model_results)
+            for future in as_completed(futures):
+                job_index, dataset_name, model_name = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    print(
+                        f"Experiment failed for dataset='{dataset_name}', model='{model_name}': {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    continue
 
+                result['dataset'] = dataset_name
+                result['model'] = model_name
+                result['run_id'] = run_id
+                results_by_job[job_index] = result
+
+                ordered_results = [results_by_job[idx] for idx in sorted(results_by_job)]
                 if output_path is not None:
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(output_path, 'w') as f:
-                        json.dump(results, f, indent=2, default=str)
-                raise KeyboardInterrupt
-            except KeyboardInterrupt:
-                # Persist any completed model results before exiting.
-                if output_path is not None:
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(output_path, 'w') as f:
-                        json.dump(results, f, indent=2, default=str)
-                raise
-            model_results['dataset'] = f'dataset_{dataset_idx}'
-            model_results['model'] = model.get_name()
+                    _write_aggregate_results(ordered_results, output_path)
+                    _write_single_experiment_result(result, output_path, run_id, job_index)
+    except KeyboardInterrupt:
+        if output_path is not None:
+            ordered_results = [results_by_job[idx] for idx in sorted(results_by_job)]
+            _write_aggregate_results(ordered_results, output_path)
+        raise
 
-            results.append(model_results)
-
-            # Save incremental results in case of long evaluation
-            if output_path is not None:
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(output_path, 'w') as f:
-                    json.dump(results, f, indent=2, default=str)
-
-    return results
+    return [results_by_job[idx] for idx in sorted(results_by_job)]
 
 
 def evaluate_model(model: Any, dataset: Dataset, onet_db: pd.DataFrame,

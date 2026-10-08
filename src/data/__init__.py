@@ -29,14 +29,32 @@ Related Docs:
 """
 
 from src.data.fetch_questions import fetch_questions
-from src.data.schemas import AnswerOption, Question, QuestionSet
+from src.data.schemas import AnswerOption, Question, QuestionSet, TrainingRecord, CareerProfile
 from src.data.store import load_questions, save_questions
+from src.data.loader import load_training_records, load_career_profiles, split_training_records
+from src.data.preprocess import records_to_dataframe, extract_features, extract_labels, build_training_matrix
+from src.data.validate import validate_training_dataframe, validate_career_dataframe
 
 __all__ = [
+    # Question schemas
     "AnswerOption",
     "Question",
     "QuestionSet",
     "fetch_questions",
     "load_questions",
     "save_questions",
+    # Training record schemas and loading
+    "TrainingRecord",
+    "CareerProfile",
+    "load_training_records",
+    "load_career_profiles",
+    "split_training_records",
+    # Preprocessing
+    "records_to_dataframe",
+    "extract_features",
+    "extract_labels",
+    "build_training_matrix",
+    # Validation
+    "validate_training_dataframe",
+    "validate_career_dataframe",
 ]

@@ -7,4 +7,4 @@ The environment will automatically install dependencies.
 Option 2:
 Install dependencies manually:
 
-pip install -r requirements.txt
+pip install -r environment/requirements.txt

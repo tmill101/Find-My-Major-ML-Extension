@@ -154,6 +154,11 @@ training:
   parallel_jobs: 4
 ```
 
+`training.parallel_jobs` controls `ProcessPoolExecutor` worker count for
+experiment-level parallelism (`datasets × models`) in `src/evaluation/evaluator.py`.
+This setting does not enable threading and does not parallelize inside individual
+model training methods.
+
 ---
 
 ## Evaluation Configuration

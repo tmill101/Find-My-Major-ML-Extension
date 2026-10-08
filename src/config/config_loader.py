@@ -33,6 +33,7 @@ Related Docs:
 import os
 import yaml
 from datetime import datetime
+from pathlib import Path
 
 
 def load_config(config_path):
@@ -64,18 +65,43 @@ def load_config(config_path):
     with open(config_path, 'r') as file:
         config = yaml.safe_load(file)
 
+    if not isinstance(config, dict):
+        raise ValueError("Configuration file must contain a YAML mapping at the top level.")
+
     if 'experiment' not in config or 'id' not in config['experiment']:
         raise KeyError("Configuration must contain 'experiment.id'")
+
+    if 'output' not in config or 'directory' not in config['output']:
+        raise KeyError("Configuration must contain 'output.directory'")
 
     experiment_id = config['experiment']['id']
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_id = f"{experiment_id}_{timestamp}"
-
     start_time = datetime.now().isoformat()
+
+    output_directory = config['output']['directory']
+    run_output_dir = str(Path(output_directory) / run_id)
+
+    config.setdefault('output', {})
+    config['output'].setdefault('save_models', False)
+    config['output'].setdefault('save_predictions', False)
+    config['output'].setdefault('save_metrics', False)
+    config['output'].setdefault('save_metrics_csv', False)
+    config['output'].setdefault('visual_output', False)
+
+    export_config = config.setdefault('export', {})
+    export_config.setdefault('export_inference_model', False)
+    export_config.setdefault('format', 'onnx')
+    export_config.setdefault('save_model_artifact', False)
+    export_config.setdefault('package_name', 'riasec_export_package.zip')
+    export_config.setdefault('verify_package', True)
+    export_config.setdefault('upload_script', None)
+    export_config.setdefault('upload_arguments', [])
 
     config['run'] = {
         'run_id': run_id,
-        'start_time': start_time
+        'start_time': start_time,
+        'output_dir': run_output_dir,
     }
 
     return config

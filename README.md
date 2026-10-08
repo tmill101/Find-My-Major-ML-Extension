@@ -1,167 +1,112 @@
 # Find My Major ML Extension
 
-Lightweight AI/ML-assisted career recommendation research project based on the Holland Code (RIASEC), designed for short advisor-student interactions and mobile/offline use cases.
+A Python-based research repository for RIASEC-informed career recommendation experiments. This project is built around a configuration-driven evaluation pipeline, reusable source modules, and export utilities for career matching and model analysis.
 
-## Problem
+## Overview
 
-Many undecided students receive career guidance that is too broad during short advising sessions. Traditional Holland Code tools are often static and not adaptive enough for fast, personalized recommendations.
+This repository contains the code and documentation needed to:
 
-## Project Goal
+- load and validate experiment configuration
+- process career and RIASEC-related data
+- execute model evaluation workflows
+- generate evaluation artifacts and optional frontend export assets
+- support reproducible experiment tracking under `experiments/results/`
 
-Build and evaluate a prototype that can:
+The project is organized to separate core logic in `src/`, experiment definitions in `experiments/`, and documentation in `docs/`.
 
-- Infer RIASEC profiles from minimal input (target: ~10-15 questions)
-- Generate ranked career recommendations
-- Refine recommendations using user feedback
-- Run with low latency on mobile-friendly hardware (local/offline emphasis)
+## What’s Included
 
-## Proposed System
+- `main.py` — top-level CLI entrypoint for running experiments
+- `src/config/` — configuration loading, validation, and run metadata
+- `src/evaluation/` — evaluation orchestration, reporting, and visualization
+- `src/export/` — frontend artifact export utilities
+- `experiments/config/` — example experiment configuration files
+- `environment/requirements.txt` — Python dependencies for development and execution
+- `docs/` — repository guidance, architecture rules, and workflow documentation
+- `tests/` — unit tests for configuration, data, export, and evaluation logic
 
-The project proposes a local, lightweight recommendation flow:
+## Requirements
 
-1. Collect short student interaction signals
-2. Infer a RIASEC vector using an ML model
-3. Rank career suggestions aligned to inferred interests
-4. Allow rejection/refinement feedback to improve follow-up suggestions
+- Python 3.11 or later
+- Install dependencies:
 
-## Success Criteria (From Proposal)
-
-- RIASEC inference agreement with fuller assessments (for example, cosine similarity or rank correlation)
-- Ranking quality metrics (for example, NDCG@K, Precision@K)
-- User relevance/satisfaction feedback
-- Practical constraints: low latency and mobile-compatible model footprint
-
-## Scope
-
-In scope:
-
-- AI/ML-based RIASEC and career recommendation prototyping
-- Model experimentation and feature engineering
-- Evaluation workflow and reproducibility practices
-
-Out of scope (current project term):
-
-- Full production UI
-- Full production-grade mapping of all careers to MSU Denver programs
-
-## Repository Status
-
-Current repository state is an early scaffold with governance-first documentation:
-
-- `src/` module files currently exist as placeholders
-- `tests/` exists but does not yet include implemented test modules
-- Documentation, contribution workflow, and CI policy are already defined
-
-This means the project has structure and standards in place, while core model/evaluation implementation is still in-progress.
-
-## Repository Structure
-
-```text
-.
-|-- .github/
-|   |-- workflows/ci.yml
-|   `-- contributing/
-|-- docs/
-|   |-- README.md
-|   |-- repo_structure.md
-|   |-- coding_rules.md
-|   |-- ai_usage_policy.md
-|   |-- evaluation_workflow.md
-|   |-- data/data_governance.md
-|   |-- experiments/tracking.md
-|   |-- ci/ci_design.md
-|   `-- templates/
-|-- experiments/
-|-- notebooks/
-|-- src/
-|   |-- data/
-|   |-- models/
-|   |-- evaluation/
-|   `-- export/
-`-- tests/
+```bash
+pip install -r environment/requirements.txt
 ```
 
-## How to Run
+## Running an Experiment
 
-### Prerequisites
-
-- Python 3.11+
-- Dependencies: `pip install -r requirements.txt`
-
-### Running Experiments
-
-1. Create or modify a configuration file in `experiments/config/` (see `docs/templates/exp_config.yaml` for the full structure)
-2. Run the training pipeline:
+1. Choose or create a YAML config file under `experiments/config/`. (see `experiments/config/exp_config.yaml` as a template.)
+2. Run the pipeline from the repository root:
 
 ```bash
 python main.py experiments/config/exp_config.yaml
 ```
 
-This will:
-- Load the experiment configuration
-- Generate a unique run ID (format: `<experiment_id>_<YYYYMMDD_HHMMSS>`)
-- Create an output directory under `experiments/results/`
-- Execute the training pipeline (when implemented)
+The pipeline will:
 
-### Development Setup
+- validate the experiment configuration
+- create a timestamped run directory under `experiments/results/`
+- execute the evaluation workflow
+- optionally export CSV results, visualizations, and frontend artifacts
 
-For development, use the provided dev container (`.devcontainer/`) or install dependencies locally:
+### Optional Export
 
-```bash
-pip install -r requirements.txt
-```
+To export frontend inference assets, enable the appropriate export flags in your configuration or use the repository export utilities in `src/export/` and `src/scripts/export_for_frontend.py`.
 
-Run tests with:
+## Testing
+
+Run the test suite from the repository root:
 
 ```bash
 pytest
 ```
 
-## Working Agreement (Important)
+## Recommended Workflow
 
-Before contributing code, read:
+Before modifying code, consult the repository documentation:
 
-1. `docs/repo_structure.md`
-2. `docs/coding_rules.md`
-3. `docs/ai_usage_policy.md`
-4. `docs/evaluation_workflow.md`
-5. `docs/data/data_governance.md`
-6. `docs/experiments/tracking.md`
+- `docs/repo_structure.md`
+- `docs/coding_rules.md`
+- `docs/ai_usage_policy.md`
+- `docs/evaluation_workflow.md`
+- `docs/data/data_governance.md`
+- `docs/experiments/tracking.md`
 
-These documents are operational constraints, not optional references.
+These documents describe the intended architecture, development conventions, and experiment tracking expectations.
 
-## Development and CI Notes
+## Repository Layout
 
-- CI workflow: `.github/workflows/ci.yml`
-- Primary CI test entry point: `pytest`
-- CI currently validates importability with `python -c "import src"`
+```text
+.
+├── docs/
+├── environment/
+├── experiments/
+├── main.py
+├── models/
+├── notebooks/
+├── src/
+│   ├── config/
+│   ├── data/
+│   ├── evaluation/
+│   ├── export/
+│   ├── models/
+│   └── scripts/
+├── tests/
+└── README.md
+```
 
-As implementation is added, maintain doc-code parity and keep tests aligned with `src/`.
+## Status
 
-## Planned Technology Stack (Proposal)
+The repository is structured for research-driven development and reproducible experiment execution. Core runtime entry points, configuration handling, evaluation reporting, and artifact export scaffolding are implemented. Ongoing work focuses on expanding model implementations, data processing,evaluation coverage, and automation of data collection and export integration processes.
 
-- Python
-- Jupyter Notebook / Google Colab (research workflow)
-- scikit-learn
-- PyTorch or TensorFlow
-- Mobile export path (for example, TorchScript or TensorFlow Lite)
-- O*NET occupational data/resources
+## Companion Website
 
-## Data, Privacy, and Fairness Assumptions
+For references, demos, and related repositories, visit:
 
-- No PII collection in baseline workflow
-- No demographic/protected attributes in modeling features
-- Synthetic data may be used only for early prototyping/debugging
-- Final evaluation should use anonymized participant data
-- Bias checks should monitor skew in recommendations across RIASEC categories
+https://nmeiners.github.io/brand-new-repository/
 
-## Milestone Targets (Proposal)
+## AI Usage
+This repository encourages responsible AI usage. Please refer to `docs/ai_usage_policy.md` for guidelines on how to use AI tools effectively and ethically in your development process.
 
-- Research complete: Week 6
-- Initial ML prototype: Week 9
-- Refinement/feedback loop: Week 12
-- Final local demo: Week 16
-
-## Proposal Source
-
-Project planning details are documented in `F2_Project Proposal.docx` at the repository root.
+All AI-generated code within this repository adheres to the guidelines outlined in the AI usage policy and is documented in code comments for transparency.

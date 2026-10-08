@@ -171,7 +171,7 @@ class TestComputeAllMetrics(unittest.TestCase):
     def test_returns_correct_keys(self):
         """Test that function returns metrics for all K values."""
         results = compute_all_metrics(self.predictions, self.ground_truth, self.k_values)
-        expected_keys = ['ndcg@3', 'precision@3', 'ndcg@5', 'precision@5']
+        expected_keys = ['ndcg@3', 'precision@3', 'recall@3', 'ndcg@5', 'precision@5', 'recall@5']
         self.assertEqual(set(results.keys()), set(expected_keys))
 
     def test_values_are_floats(self):

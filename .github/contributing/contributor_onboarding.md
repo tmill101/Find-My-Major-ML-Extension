@@ -28,7 +28,7 @@ source .venv/bin/activate  # macOS/Linux
 ## 1.3 Install Dependencies
 
 ```
-pip install -r requirements.txt
+pip install -r environment/requirements.txt
 ```
 
 ## 1.4 Verify Setup

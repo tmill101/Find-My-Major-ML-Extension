@@ -31,16 +31,27 @@ Example:
 
 ```
 src/
+    config/
+        config_loader.py
+    data/
+        loader.py
     evaluation/
         metrics.py
     models/
         baseline.py
+    scripts/
+        inference_engine.py
 
 tests/
+    test_config_loader.py
+    data/
+        test_loader.py
     evaluation/
         test_metrics.py
     models/
         test_baseline.py
+    export/
+        test_export.py
 ```
 
 Rules:

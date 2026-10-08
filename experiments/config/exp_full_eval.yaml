@@ -1,0 +1,143 @@
+# ============================================================
+# Experiment Metadata
+# Fully comprehensive evaluation of all models
+# ============================================================
+
+experiment:
+  id: exp_full_eval
+  description: Full evaluation of all enabled models with visual output
+  author: Nathan Meiners
+  created: 2026-04-14
+  random_seed: 42
+
+# ============================================================
+# Dataset Matrix
+# Outer loop: each enabled dataset runs against each enabled model.
+# ============================================================
+
+onet_db_path: docs/data/master_careers_riasec_categories.csv
+
+datasets:
+
+  - name: onet_kaggle
+    enabled: true
+    train_path: docs/data/master_careers_riasec_categories.csv
+    test_path: docs/data/Kaggle_Cleaned_Mapped_Categories.csv
+    split: null
+    shuffle: false
+
+  - name: kaggle_split
+    enabled: true
+    train_path: docs/data/Kaggle_Cleaned_Mapped_Categories.csv
+    test_path: null
+    split:
+      train: 0.70
+      validation: 0.15
+      test: 0.15
+    shuffle: true
+
+# ============================================================
+# Model Matrix
+# Inner loop: each enabled model runs on each enabled dataset.
+# ============================================================
+
+models:
+
+  - model: logistic_regression
+    enabled: true
+    parameters:
+      C: 1.0
+      max_iter: 1000
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: knn
+    enabled: true
+    parameters:
+      n_neighbors: 15
+      weights: distance
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: random_forest
+    enabled: true
+    parameters:
+      n_estimators: 500
+      max_depth: 15
+      min_samples_split: 2
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: gradient_boosting
+    enabled: true
+    parameters:
+      n_estimators: 200
+      learning_rate: 0.01
+      max_depth: 7
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: heuristic
+    enabled: true
+    parameters:
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+# ============================================================
+# Training Configuration
+# ============================================================
+
+training:
+  cross_validation_folds: 5
+  normalize_features: true
+  standardize_features: true
+  parallel_jobs: 4
+
+# ============================================================
+# Evaluation
+# ============================================================
+
+evaluation:
+  metrics:
+    - ndcg_at_k
+    - precision_at_k
+    - recall_at_k
+  k_values:
+    - 5
+  benchmark_runs: 1
+  progress_log_interval: 1000
+  top_k: 5
+  max_test_samples: 100000
+
+# ============================================================
+# Output
+# ============================================================
+
+output:
+  directory: experiments/results/exp_full_eval
+  save_models: false
+  save_predictions: false
+  save_metrics: true
+  save_metrics_csv: true
+  visual_output: true
+
+# ============================================================
+# Export
+# ============================================================
+
+export:
+  export_inference_model: false
+  format: onnx
+
+# ============================================================
+# Notes
+# ============================================================
+
+notes: |
+  Full evaluation config for all models with visual output enabled.
+  Models and datasets are enabled for comprehensive testing, but saved models and predictions are disabled.

@@ -1,0 +1,219 @@
+# ============================================================
+# Experiment Metadata
+# ============================================================
+
+experiment:
+  id: exp_001
+  description: Baseline model comparison with parameter sweeps
+  author: Nathan Groshek
+  created: YYYY-MM-DD
+  random_seed: 42
+
+# ============================================================
+# Dataset Matrix
+# ============================================================
+
+onet_db_path: docs/data/master_careers_riasec_categories.csv
+
+datasets:
+
+  # Primary run: train on O*NET profiles, test on Kaggle responses
+  - name: onet_kaggle
+    enabled: true
+    train_path: docs/data/master_careers_riasec_categories.csv
+    test_path: docs/data/Kaggle_Cleaned_Mapped_Categories.csv
+    split: null
+    shuffle: false
+
+  # Optional run: Kaggle-only split
+  - name: kaggle_split
+    enabled: false
+    train_path: docs/data/Kaggle_Cleaned_Mapped_Categories.csv
+    test_path: null
+    split:
+      train: 0.70
+      validation: 0.15
+      test: 0.15
+    shuffle: true
+
+# ============================================================
+# Model Matrix
+# ============================================================
+
+models:
+
+  # Logistic Regression sweep (regularization)
+  - model: logistic_regression
+    enabled: true
+    parameters:
+      C: 0.01
+      max_iter: 1000
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: logistic_regression
+    enabled: true
+    parameters:
+      C: 0.1
+      max_iter: 1000
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: logistic_regression
+    enabled: true
+    parameters:
+      C: 1.0
+      max_iter: 1000
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: logistic_regression
+    enabled: true
+    parameters:
+      C: 10.0
+      max_iter: 1000
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  # KNN sweep (neighborhood size / weighting)
+  - model: knn
+    enabled: true
+    parameters:
+      n_neighbors: 5
+      weights: uniform
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: knn
+    enabled: true
+    parameters:
+      n_neighbors: 15
+      weights: distance
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: knn
+    enabled: true
+    parameters:
+      n_neighbors: 30
+      weights: uniform
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: knn
+    enabled: true
+    parameters:
+      n_neighbors: 50
+      weights: distance
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  # Random Forest sweep
+  - model: random_forest
+    enabled: true
+    parameters:
+      n_estimators: 200
+      max_depth: 10
+      min_samples_split: 5
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: random_forest
+    enabled: true
+    parameters:
+      n_estimators: 500
+      max_depth: 15
+      min_samples_split: 2
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  # Gradient Boosting sweep
+  - model: gradient_boosting
+    enabled: true
+    parameters:
+      n_estimators: 100
+      learning_rate: 0.2
+      max_depth: 2
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  - model: gradient_boosting
+    enabled: true
+    parameters:
+      n_estimators: 200
+      learning_rate: 0.01
+      max_depth: 7
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+  # Heuristic baseline
+  - model: heuristic
+    enabled: true
+    parameters:
+      top_n_categories: 3
+    x_features: ["Realistic", "Investigative", "Artistic", "Social", "Enterprising", "Conventional"]
+    y_features: ["Career Category"]
+
+# ============================================================
+# Training Configuration
+# ============================================================
+
+training:
+  cross_validation_folds: 5
+  normalize_features: true
+  standardize_features: true
+  parallel_jobs: 4
+
+# ============================================================
+# Evaluation
+# ============================================================
+
+evaluation:
+  metrics:
+    - ndcg_at_k
+    - precision_at_k
+    - recall_at_k
+  k_values:
+    - 5
+  benchmark_runs: 1
+  progress_log_interval: 1000
+  top_k: 5
+  max_test_samples: 5000
+
+# ============================================================
+# Output
+# ============================================================
+
+output:
+  directory: experiments/results/exp_001
+  save_models: true
+  save_predictions: true
+  save_metrics: true
+  visual_output: false
+
+# ============================================================
+# Export
+# ============================================================
+
+export:
+  export_inference_model: true
+  format: onnx
+
+# ============================================================
+# Notes
+# ============================================================
+
+notes: |
+  Dedicated exp_001 baseline + tuning sweep configuration.

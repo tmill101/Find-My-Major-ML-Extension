@@ -218,3 +218,5 @@ experiments/logs/
 experiments/results/
 
 models/*.joblib
+
+.codex

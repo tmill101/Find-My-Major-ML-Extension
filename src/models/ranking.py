@@ -80,8 +80,12 @@ def rank_jobs(
     # Filter career database to candidate categories
     candidates = onet_db[onet_db[category_col].isin(predicted_categories)].copy()
 
+    output_cols = ["Title", category_col, "Match_Score"]
+    if "O*NET-SOC Code" in onet_db.columns:
+        output_cols = ["O*NET-SOC Code", *output_cols]
+
     if candidates.empty:
-        return pd.DataFrame(columns=["Title", category_col, "Match_Score"])
+        return pd.DataFrame(columns=output_cols)
 
     # Compute cosine similarity between student vector and each candidate job
     job_vectors = candidates[feature_cols].values
@@ -92,4 +96,5 @@ def rank_jobs(
 
     # Return top-N by similarity score
     best = candidates.sort_values(by="Match_Score", ascending=False).head(top_n_jobs)
-    return best[["Title", category_col, "Match_Score"]].reset_index(drop=True)
+    
+    return best[output_cols].reset_index(drop=True)

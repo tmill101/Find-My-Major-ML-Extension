@@ -19,10 +19,16 @@ repo/
 ├── .github/
 │   └── workflows/
 ├── docs/
+├── main.py
 ├── models/
 ├── notebooks/
-├── scripts/
 ├── src/
+│   ├── config/
+│   ├── data/
+│   ├── evaluation/
+│   ├── export/
+│   ├── models/
+│   └── scripts/
 ├── experiments/
 ├── tests/
 ├── environment/
@@ -72,6 +78,20 @@ docs/
 
 ---
 
+## main.py
+
+**Purpose:**
+Top-level CLI entrypoint for the training and evaluation pipeline. It parses command-line arguments, loads experiment configuration, and delegates execution to stable `src/` modules.
+
+**Rules:**
+
+* Must remain minimal and delegate core logic to `src/`.
+* Must include the Source Code File Header Template and AI tool disclosure.
+* Should be executable from the repository root.
+* Should document its configuration-driven execution path and supported command-line flags.
+
+---
+
 ## notebooks/
 
 **Purpose:**
@@ -104,7 +124,44 @@ Primary source code for reusable, production-quality logic.
 * Files must include the Source Code File Header Template.
 * Public functions/classes must include standardized docstrings.
 
-Submodules will be defined as development progresses.
+**Submodules:**
+
+- `config/` — Experiment configuration loading and validation
+- `data/` — Data loading, schemas, preprocessing, validation
+- `models/` — Model implementations and ranking
+- `evaluation/` — Evaluation orchestration, metrics, benchmarking
+- `export/` — Export utilities (reserved for future use)
+- `scripts/` — CLI utilities and utility scripts (inference, visualization, analysis)
+
+---
+
+## src/scripts/
+
+**Purpose:**
+CLI utilities, inference engines, and analysis scripts that use stable src/ modules.
+
+**Characteristics:**
+
+* May reference all src/ modules
+* Each script has a focused responsibility
+* Includes proper file headers and documentation
+* Independent of notebooks
+
+**Rules:**
+
+* All scripts must include the Source Code File Header Template
+* AI tool usage must be disclosed
+* Utility scripts should have main guards (`if __name__ == "__main__"`)
+* Complex utilities should be callable from other modules (not just CLI)
+
+**Examples:**
+
+* `inference_engine.py` — ONNX model inference and job ranking
+* `build_riasec_json.py` — Model training and export to ONNX
+* `test_engine.py` — Inference validation tests
+* `analyze_batch_recommendations.py` — Batch recommendation analysis
+* `plot_evaluation.py` — Evaluation result visualization
+* `fetch_onet_questions.py` — O*NET API question fetching
 
 ---
 
@@ -146,7 +203,7 @@ Defines reproducible development environments.
 
 **Examples:**
 
-* `requirements.txt`
+* `environment/requirements.txt`
 * `environment.yml`
 * Colab setup instructions
 
@@ -167,18 +224,6 @@ Stores local model artifacts and model-related notes used during experimentation
 * Treat this directory as non-source artifact space.
 * Keep reproducibility by documenting how artifacts are generated.
 * Large binaries should remain ignored unless explicitly required.
-
----
-
-## scripts/
-
-**Purpose:**
-Houses utility scripts for data/bootstrap tasks that are not part of `src/` runtime modules.
-
-**Rules:**
-
-* Scripts may call into `src/` modules but should not duplicate core logic.
-* Script behavior that becomes reusable should be promoted into `src/`.
 
 ---
 

@@ -17,19 +17,20 @@ Editors:
   - AI Assistant (2026-03-14) — Initial implementation
   - AI Assistant (2026-03-20) — Added config-driven model training loop
   - AI Assistant (2026-03-30) — Added deterministic seed initialization and output flag warnings
+  - OpenAI Codex (2026-04-06) — Delegated dataset/model execution to evaluator multiprocessing workers
+  - AI Assistant (2026-04-13) — Added visual_output flag support via generate_visualizations
 
 Last Editor:
   - AI Assistant
 
 Last Edit Date:
-  2026-03-30
+  2026-04-13
 
 Assumptions & Constraints:
   - Executed from repository root
   - Config file exists and is valid
   - Output directory is writable
-  - datasets.onet_db_path in config points to a valid CSV file
-  - Training data CSV exists at datasets[0].train_path
+  - onet_db_path in config points to a valid CSV file
 
 Related Docs:
   - docs/src/config/config_loader.md
@@ -45,10 +46,10 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 from src.config.config_loader import load_config
-from src.data.loader import load_training_records, split_training_records
-from src.evaluation import Dataset, evaluate_experiment
+from src.evaluation import evaluate_experiment
 from src.evaluation.reporting import save_results_to_file, save_results_to_csv
-from src.models import MODEL_REGISTRY
+from src.evaluation.visualization import generate_visualizations
+from src.export import export_frontend_artifacts
 
 
 def main():
@@ -56,24 +57,23 @@ def main():
     Name: main
 
     Purpose:
-      Parses command-line arguments, loads the experiment configuration, trains all
-      models defined in the config, and returns the trained model array for evaluation.
-      All model types, features, hyperparameters, and result counts are read from config.
+      Parses command-line arguments, loads the experiment configuration, and
+      executes evaluation across the dataset/model matrix defined in config.
+      Execution orchestration is handled by src.evaluation.evaluator.
 
     Inputs:
       - Command-line arguments: config_path (positional)
 
     Outputs:
-      - list[BaseModel] — trained model instances (returned for downstream use)
+      - list[dict] — evaluation result payloads for completed experiment jobs
 
     Raises / Errors:
       - SystemExit: if config file does not exist or loading fails
-      - KeyError: if config is missing required keys (model name, onet_db_path, etc.)
+      - KeyError: if config is missing required keys (e.g., onet_db_path)
 
     Notes:
-      - Models are instantiated via MODEL_REGISTRY using the name string from config.
-      - top_n_categories is read from each model's parameters block in config.
-      - onet_db is loaded once and passed to all models at test time.
+      - Dataset/model loading and model training occur inside evaluator workers.
+      - Main only validates critical paths and handles output persistence.
     """
     parser = argparse.ArgumentParser(description="Run ML training pipeline with config file.")
     parser.add_argument('config_path', help='Path to the experiment configuration YAML file')
@@ -106,7 +106,6 @@ def main():
         np.random.seed(seed)
 
     # Create output directory (per docs: experiments/results/<experiment_id>/<run_id>/)
-    experiment_id = config['experiment']['id']
     base_dir = config['output']['directory']
     run_id = config['run']['run_id']
 
@@ -117,7 +116,7 @@ def main():
     print(f"Configuration loaded successfully. Run ID: {run_id}")
     print(f"Output directory created: {output_dir}")
 
-    # Determine O*NET database path and load it for job ranking
+    # Validate O*NET database path once before spawning workers.
     onet_db_path = config.get('onet_db_path')
     if not onet_db_path:
         raise KeyError("Configuration missing 'onet_db_path'.")
@@ -125,91 +124,18 @@ def main():
     if not os.path.isfile(onet_db_path):
         raise FileNotFoundError(f"O*NET DB file not found: {onet_db_path}")
 
-    onet_db = pd.read_csv(onet_db_path)
-
-    # Determine the union of all model feature columns for dataset construction
-    model_feature_columns = sorted({
-        feature
-        for model_cfg in config.get('models', [])
-        for feature in model_cfg.get('x_features', [])
-    })
-
-    # Label column for all datasets is expected to be aligned with models' y_features
-    label_column = config['models'][0]['y_features'][0] if config.get('models') else 'Career Category'
-
-    # Build Dataset objects from config
-    datasets = []
-
-    for dataset_cfg in config.get('datasets', []):
-        train_path = dataset_cfg.get('train_path')
-        test_path = dataset_cfg.get('test_path')
-
-        if not train_path or not os.path.isfile(train_path):
-            raise FileNotFoundError(f"Training data file not found: {train_path}")
-
-        train_records = load_training_records(train_path)
-
-        if test_path:
-            if not os.path.isfile(test_path):
-                raise FileNotFoundError(f"Test data file not found: {test_path}")
-            test_records = load_training_records(test_path)
-        else:
-            split_cfg = dataset_cfg.get('split', {})
-            train_fraction = float(split_cfg.get('train', 0.7))
-            val_fraction = float(split_cfg.get('validation', 0.15))
-            test_fraction = float(split_cfg.get('test', 0.15))
-
-            train_records, _, test_records = split_training_records(
-                train_records,
-                val_size=val_fraction,
-                test_size=test_fraction,
-            )
-
-        if dataset_cfg.get('shuffle', False):
-            random.shuffle(train_records)
-            random.shuffle(test_records)
-
-        datasets.append(Dataset(
-            train_records=train_records,
-            test_records=test_records,
-            feature_columns=model_feature_columns,
-            label_column=label_column,
-        ))
-
-    # Build model instances
-    models = []
-    for model_cfg in config['models']:
-        model_name = model_cfg['model']
-        if model_name not in MODEL_REGISTRY:
-            print(f"Warning: Unknown model '{model_name}' in config — skipping.", file=sys.stderr)
-            continue
-
-        parameters = dict(model_cfg.get('parameters', {}))
-        top_n_categories = parameters.pop('top_n_categories', 3)
-
-        x_features = model_cfg['x_features']
-        y_feature = model_cfg['y_features'][0]
-        top_n_jobs = config['evaluation'].get('top_k', 5)
-
-        model = MODEL_REGISTRY[model_name](
-            x_features=x_features,
-            y_feature=y_feature,
-            parameters=parameters,
-            top_n_jobs=top_n_jobs,
-            top_n_categories=top_n_categories,
-        )
-        models.append(model)
-
-    print(f"\n{len(datasets)} dataset(s) loaded, {len(models)} model(s) instantiated.")
+    dataset_count = sum(1 for d in config.get('datasets', []) if d.get('enabled', True))
+    model_count = sum(1 for m in config.get('models', []) if m.get('enabled', True))
+    print(f"\n{dataset_count} dataset config(s), {model_count} model config(s) discovered.")
 
     # Run evaluation across all datasets and models
     evaluation_results_path = output_dir / 'evaluation.json'
     try:
         evaluation_results = evaluate_experiment(
-            datasets,
-            models,
-            onet_db,
-            config,
+            datasets=[],
+            models=[],
+            onet_db=pd.DataFrame(),
+            config=config,
             output_path=evaluation_results_path,
         )
     except KeyboardInterrupt:
@@ -245,6 +171,18 @@ def main():
             "Warning: output.save_predictions=true but per-sample prediction "
             "persistence is not implemented in this pipeline."
         )
+
+    if config.get('export', {}).get('export_inference_model', False):
+        print("Exporting frontend inference artifacts ...")
+        export_paths = export_frontend_artifacts(config, output_dir)
+        print(
+            f"Frontend artifacts written to: {export_paths['onnx_model']} "
+            f"and {export_paths['frontend_db']}"
+        )
+
+    if config['output'].get('visual_output', False):
+        print("Generating visualizations ...")
+        generate_visualizations(output_dir)
 
     print(f"\nExperiment complete. Total results: {len(evaluation_results)}")
 

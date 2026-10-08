@@ -14,12 +14,13 @@ AI Tools Used:
 Editors:
   - AI Assistant (2026-03-23) — Initial implementation
   - AI Assistant (2026-03-30) — Added validation and contract-check coverage
+  - OpenAI Codex (2026-04-06) — Added multiprocessing execution coverage
 
 Last Editor:
-  - AI Assistant
+  - OpenAI Codex
 
 Last Edit Date:
-  2026-03-30
+  2026-04-06
 
 Assumptions & Constraints:
   - Uses mock models and datasets
@@ -38,10 +39,12 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 import pandas as pd
 from src.evaluation.evaluator import (
+    _build_experiment_jobs,
     Dataset,
-    evaluate_model,
-    evaluate_experiment,
     EvaluationInterrupted,
+    evaluate_experiment,
+    evaluate_model,
+    run_single_experiment,
 )
 from src.data.schemas import TrainingRecord
 
@@ -304,70 +307,6 @@ class TestEvaluateModel(unittest.TestCase):
             self.assertEqual(partial['metrics']['ndcg@5'], 0.8)
             self.assertEqual(partial['metrics']['precision@5'], 0.6)
 
-    def test_evaluate_experiment_writes_incremental_output(self):
-        """Test evaluate_experiment writes output path progressively."""
-        dataset = self.dataset
-        model = self.mock_model
-        onet_db = self.onet_db
-        config = {'evaluation': {'k_values': [5]}}
-
-        output_dir = tempfile.mkdtemp()
-        output_path = Path(output_dir) / 'evaluation.json'
-
-        with patch('src.evaluation.evaluator.evaluate_model') as mock_eval:
-            mock_eval.return_value = {
-                'metrics': {'ndcg@5': 0.5},
-                'latency_ms': 5.0,
-                'memory_bytes': 512,
-                'model_size_mb': 0.1,
-                'constraint_violations': {},
-                'samples_evaluated': 1,
-            }
-            results = evaluate_experiment([dataset], [model], onet_db, config, output_path=output_path)
-
-        self.assertTrue(output_path.exists())
-        with open(output_path, 'r') as f:
-            saved_results = json.load(f)
-
-        self.assertEqual(saved_results, results)
-
-        shutil.rmtree(output_dir)
-
-    def test_evaluate_experiment_persists_partial_result_on_interrupt(self):
-        """Test evaluate_experiment saves partial model result when interrupted."""
-        dataset = self.dataset
-        model = self.mock_model
-        onet_db = self.onet_db
-        config = {'evaluation': {'k_values': [5]}}
-
-        output_dir = tempfile.mkdtemp()
-        output_path = Path(output_dir) / 'evaluation.json'
-
-        partial_result = {
-            'metrics': {'ndcg@5': 0.5, 'precision@5': 0.4},
-            'latency_ms': 5.0,
-            'memory_bytes': 512,
-            'model_size_mb': 0.1,
-            'constraint_violations': {},
-            'samples_evaluated': 2,
-        }
-
-        with patch('src.evaluation.evaluator.evaluate_model') as mock_eval:
-            mock_eval.side_effect = EvaluationInterrupted(partial_result)
-
-            with self.assertRaises(KeyboardInterrupt):
-                evaluate_experiment([dataset], [model], onet_db, config, output_path=output_path)
-
-        self.assertTrue(output_path.exists())
-        with open(output_path, 'r') as f:
-            saved_results = json.load(f)
-
-        self.assertEqual(len(saved_results), 1)
-        self.assertTrue(saved_results[0]['interrupted'])
-        self.assertEqual(saved_results[0]['samples_evaluated'], 2)
-
-        shutil.rmtree(output_dir)
-
     def test_evaluate_model_no_test_method(self):
         """Test error handling when model has no test method."""
         bad_model = Mock(spec=['get_name'])
@@ -375,6 +314,242 @@ class TestEvaluateModel(unittest.TestCase):
 
         with self.assertRaises(AttributeError):
             evaluate_model(bad_model, self.dataset, self.onet_db, self.config)
+
+
+class TestExperimentParallelExecution(unittest.TestCase):
+    """Tests multiprocessing experiment orchestration."""
+
+    def setUp(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.feature_columns = [
+            'Realistic',
+            'Investigative',
+            'Artistic',
+            'Social',
+            'Enterprising',
+            'Conventional',
+        ]
+
+        self.train_path = self.temp_dir / 'train.csv'
+        self.test_path = self.temp_dir / 'test.csv'
+        self.onet_path = self.temp_dir / 'onet.csv'
+
+        self._write_training_csv(
+            self.train_path,
+            [
+                self._training_row(
+                    category='Engineering, Manufacturing & Construction',
+                    realistic=0.9,
+                    investigative=0.7,
+                    artistic=0.2,
+                    social=0.3,
+                    enterprising=0.6,
+                    conventional=0.8,
+                ),
+                self._training_row(
+                    category='Science & Mathematics',
+                    realistic=0.5,
+                    investigative=0.9,
+                    artistic=0.4,
+                    social=0.5,
+                    enterprising=0.3,
+                    conventional=0.4,
+                ),
+            ],
+        )
+
+        self._write_training_csv(
+            self.test_path,
+            [
+                self._training_row(
+                    category='Science & Mathematics',
+                    realistic=0.6,
+                    investigative=0.8,
+                    artistic=0.5,
+                    social=0.4,
+                    enterprising=0.3,
+                    conventional=0.4,
+                )
+            ],
+        )
+
+        pd.DataFrame(
+            [
+                {
+                    'O*NET-SOC Code': '11-9041.00',
+                    'Title': 'Engineering Manager',
+                    'Realistic': 0.9,
+                    'Investigative': 0.6,
+                    'Artistic': 0.2,
+                    'Social': 0.4,
+                    'Enterprising': 0.8,
+                    'Conventional': 0.7,
+                    'Career Category': 'Engineering, Manufacturing & Construction',
+                },
+                {
+                    'O*NET-SOC Code': '19-2031.00',
+                    'Title': 'Chemist',
+                    'Realistic': 0.5,
+                    'Investigative': 0.9,
+                    'Artistic': 0.3,
+                    'Social': 0.4,
+                    'Enterprising': 0.2,
+                    'Conventional': 0.5,
+                    'Career Category': 'Science & Mathematics',
+                },
+            ]
+        ).to_csv(self.onet_path, index=False)
+
+        dataset_a = {
+            'name': 'dataset_a',
+            'train_path': str(self.train_path),
+            'test_path': str(self.test_path),
+            'split': None,
+            'shuffle': False,
+        }
+        dataset_b = {
+            'name': 'dataset_b',
+            'train_path': str(self.train_path),
+            'test_path': str(self.test_path),
+            'split': None,
+            'shuffle': False,
+        }
+        model_cfg = {
+            'model': 'heuristic',
+            'parameters': {'top_n_categories': 2},
+            'x_features': self.feature_columns,
+            'y_features': ['Career Category'],
+        }
+
+        self.base_config = {
+            'experiment': {'id': 'test_exp', 'random_seed': 42},
+            'run': {'run_id': 'test_exp_20260406_000000'},
+            'onet_db_path': str(self.onet_path),
+            'datasets': [dataset_a, dataset_b],
+            'models': [model_cfg],
+            'training': {'parallel_jobs': 2},
+            'evaluation': {
+                'metrics': ['ndcg_at_k', 'precision_at_k'],
+                'k_values': [1],
+                'top_k': 1,
+                'benchmark_runs': 1,
+                'max_test_samples': 1,
+                'progress_log_interval': 1000,
+            },
+        }
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir)
+
+    @staticmethod
+    def _training_row(
+        category: str,
+        realistic: float,
+        investigative: float,
+        artistic: float,
+        social: float,
+        enterprising: float,
+        conventional: float,
+    ) -> dict:
+        return {
+            'R normalized': realistic,
+            'I normalized': investigative,
+            'A normalized': artistic,
+            'S normalized': social,
+            'E normalized': enterprising,
+            'C normalized': conventional,
+            'Career Category': category,
+        }
+
+    @staticmethod
+    def _write_training_csv(path: Path, rows: list[dict]) -> None:
+        pd.DataFrame(rows).to_csv(path, index=False)
+
+    def test_jobs_are_generated_from_dataset_model_matrix(self):
+        config = {
+            'datasets': [{'name': 'd1'}, {'name': 'd2'}],
+            'models': [{'model': 'heuristic'}, {'model': 'knn'}],
+        }
+
+        jobs = _build_experiment_jobs(config)
+
+        self.assertEqual(len(jobs), 4)
+        self.assertEqual(jobs[0][0]['name'], 'd1')
+        self.assertEqual(jobs[0][1]['model'], 'heuristic')
+        self.assertEqual(jobs[3][0]['name'], 'd2')
+        self.assertEqual(jobs[3][1]['model'], 'knn')
+
+    def test_worker_returns_expected_result_structure(self):
+        result = run_single_experiment(
+            self.base_config['datasets'][0],
+            self.base_config['models'][0],
+            self.base_config,
+        )
+
+        self.assertIn('metrics', result)
+        self.assertIn('latency_ms', result)
+        self.assertIn('memory_bytes', result)
+        self.assertIn('model_size_mb', result)
+        self.assertIn('constraint_violations', result)
+        self.assertIn('samples_evaluated', result)
+        self.assertEqual(result['dataset'], 'dataset_a')
+        self.assertEqual(result['model'], 'heuristic')
+
+    def test_parallel_execution_completes_successfully(self):
+        output_path = self.temp_dir / 'evaluation.json'
+        results = evaluate_experiment(
+            datasets=[],
+            models=[],
+            onet_db=pd.DataFrame(),
+            config=self.base_config,
+            output_path=output_path,
+        )
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(output_path.exists())
+        with open(output_path, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+        self.assertEqual(len(saved), 2)
+
+        per_experiment_files = list((self.temp_dir / 'per_experiment').glob('*.json'))
+        self.assertEqual(len(per_experiment_files), 2)
+
+    def test_output_path_parent_is_created_if_missing(self):
+        output_path = self.temp_dir / 'nested' / 'evaluation.json'
+        results = evaluate_experiment(
+            datasets=[],
+            models=[],
+            onet_db=pd.DataFrame(),
+            config=self.base_config,
+            output_path=output_path,
+        )
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(output_path.exists())
+        self.assertTrue((self.temp_dir / 'nested' / 'per_experiment').exists())
+
+    def test_failed_job_does_not_stop_other_jobs(self):
+        bad_dataset = {
+            'name': 'broken_dataset',
+            'train_path': str(self.temp_dir / 'missing_train.csv'),
+            'test_path': str(self.temp_dir / 'missing_test.csv'),
+            'split': None,
+            'shuffle': False,
+        }
+        config = dict(self.base_config)
+        config['datasets'] = [self.base_config['datasets'][0], bad_dataset]
+
+        results = evaluate_experiment(
+            datasets=[],
+            models=[],
+            onet_db=pd.DataFrame(),
+            config=config,
+            output_path=self.temp_dir / 'evaluation_failed.json',
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['dataset'], 'dataset_a')
+        self.assertEqual(results[0]['model'], 'heuristic')
 
 
 if __name__ == '__main__':
